@@ -48,11 +48,27 @@ else routes through the Brain.
 
 | Layer | Responsibility | Lives on |
 |---|---|---|
-| Perception | Audio capture → transcript, **AND** camera capture → visual context | ESP32-CAM (eyes) + INMP441/phone/PC mic (ears) + STT/vision engine |
+| Perception | Audio capture → transcript, **AND** camera capture → visual context | ESP32-CAM (eyes, both tiers) + VC-02's own mic (Path A only) + phone/PC mic (Path B) + STT/vision engine |
 | Cognition | Decide *what* to do and *why* | Brain server (this doc) |
 | Orchestration | Decide *which node* does it, *when* | Hub (already in your main README's HRP design) |
 | Execution | Actually do it | Robot / Mobile / PC nodes |
 | Feedback | Tell the human what happened | TTS reply, OLED status |
+
+**Important correction on audio hardware:** the VC-02-Kit ships with
+its own bundled mic, but that mic only feeds VC-02's own internal
+150-command recognition engine — there's no documented way for VC-02
+to export that raw audio elsewhere. So:
+
+- **Path A (wake word + fixed safety commands)** — VC-02's own mic.
+  Nothing extra to buy.
+- **Path B (open natural language)** — needs raw audio sent to a
+  cloud/local STT, which VC-02 doesn't provide. For now, this comes
+  from the **phone or PC node's own mic** (both already exist in your
+  architecture) — no new hardware needed. A dedicated digital mic on
+  the robot itself (e.g. INMP441 over I2S into the ESP32) only becomes
+  necessary later, if you want the robot to understand open speech
+  standalone, without a phone or PC nearby. Don't buy one until that's
+  an actual requirement.
 
 Perception isn't audio-only. **ESP32-CAM is the robot's eyes** — it
 streams MJPEG over its own WebSocket channel (per your main README),
@@ -60,7 +76,9 @@ separate from the audio/command channel. This means vision and voice
 arrive at the Brain as two independent streams that get fused only
 when a task actually needs both (e.g. "look at what's on my desk and
 tell me if my charger is there" needs a frame *and* the transcript
-together; "wave your hand" needs only the transcript).
+together; "wave your hand" needs only the transcript). Unlike the mic
+situation above, the camera has no split — the same ESP32-CAM covers
+both the reflex tier and the cognitive tier described below.
 
 The Brain does **not** talk to hardware directly. It talks to the Hub.
 The Hub talks to nodes. This separation is what lets you swap a phone

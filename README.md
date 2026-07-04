@@ -48,11 +48,19 @@ else routes through the Brain.
 
 | Layer | Responsibility | Lives on |
 |---|---|---|
-| Perception | Audio capture → transcript | ESP32-CAM mic / phone mic / PC mic + STT engine |
+| Perception | Audio capture → transcript, **AND** camera capture → visual context | ESP32-CAM (eyes) + INMP441/phone/PC mic (ears) + STT/vision engine |
 | Cognition | Decide *what* to do and *why* | Brain server (this doc) |
 | Orchestration | Decide *which node* does it, *when* | Hub (already in your main README's HRP design) |
 | Execution | Actually do it | Robot / Mobile / PC nodes |
 | Feedback | Tell the human what happened | TTS reply, OLED status |
+
+Perception isn't audio-only. **ESP32-CAM is the robot's eyes** — it
+streams MJPEG over its own WebSocket channel (per your main README),
+separate from the audio/command channel. This means vision and voice
+arrive at the Brain as two independent streams that get fused only
+when a task actually needs both (e.g. "look at what's on my desk and
+tell me if my charger is there" needs a frame *and* the transcript
+together; "wave your hand" needs only the transcript).
 
 The Brain does **not** talk to hardware directly. It talks to the Hub.
 The Hub talks to nodes. This separation is what lets you swap a phone
@@ -62,6 +70,38 @@ Brain's reasoning logic at all.
 ---
 
 ## 3. The Capability Registry — This Is the Actual Design Problem
+
+### 3.1 Vision Has Two Tiers — Don't Route Everything Through the LLM
+
+Not every visual task should go through the Brain/LLM. Split it:
+
+**Tier 1 — Local Reflex Vision (no Brain, no LLM, runs on the robot itself)**
+- Face tracking to keep the camera/head pointed at a person
+- Basic motion/gesture detection to trigger a wake-adjacent reaction
+- This is `robot.vision.track_face` from your main README — it's a
+  tight, low-latency loop on the ESP32/ESP32-CAM side. It never needs
+  to leave the robot, never touches the LLM, and must not be routed
+  through the Brain — the round-trip latency would make face tracking
+  feel broken.
+
+**Tier 2 — Cognitive Vision (goes through the Brain, uses a multimodal LLM call)**
+- Anything that requires *understanding* a scene: "what am I holding,"
+  "is the door open," "read this sign," "how many people are in the room"
+- Here, a single JPEG frame from the ESP32-CAM is attached to the LLM
+  call alongside the transcript. Gemini (and most current LLMs) accept
+  image input directly in the same call used for tool-calling — so this
+  is an extension of the same Cognition step from §4, not a separate
+  pipeline.
+- Cost/latency tradeoff: only pull a frame when the transcript itself
+  implies a visual question. Don't attach a frame to every single voice
+  request — that's wasted bandwidth and cost for "wave your hand."
+
+**Deciding which tier a request needs is itself part of the Brain's job** —
+if the transcript has no visual reference, skip vision entirely; if it
+does ("look at," "is there," "what do you see," "read the"), the Brain
+requests a fresh frame from the robot node before calling the LLM.
+
+### 3.2 The Registry Itself
 
 An LLM can only decide to do things it knows are possible. The
 Capability Registry is the list of "things any node can currently do,"
@@ -94,10 +134,23 @@ Each online node publishes a manifest like:
       "name": "sit",
       "description": "Lower into a seated resting position",
       "parameters": {}
+    },
+    {
+      "name": "describe_scene",
+      "description": "Capture a fresh frame from the robot's camera and describe what's visible. Use this whenever the user asks about something visual (what do you see, is there X, read this, etc.)",
+      "parameters": {},
+      "tier": "cognitive-vision"
     }
   ]
 }
 ```
+
+Note that `robot.vision.track_face` (Tier 1, reflex) is **deliberately
+not listed here** — it's not something the Brain ever decides to
+invoke. It runs continuously and autonomously on the robot regardless
+of what the Brain is doing. Only Tier 2 vision (`describe_scene`)
+shows up as an LLM-callable tool, because that's the only kind of
+vision request that needs a decision made about it.
 
 ```json
 {
